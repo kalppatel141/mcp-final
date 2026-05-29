@@ -2,6 +2,7 @@ import express from "express";
 import { createProxyMiddleware } from "http-proxy-middleware";
 import { v4 as uuidv4 } from "uuid";
 import { spawn } from "child_process";
+import net from "net";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -10,6 +11,30 @@ const CLIENT_SECRET = process.env.OAUTH_CLIENT_SECRET || "mongo-mcp-secret";
 const BASE_URL = process.env.BASE_URL;
 
 const validTokens = new Set();
+let mcpReady = false;
+
+// ─── Wait for port to be ready ───────────────────────────────────
+const waitForPort = (port, retries = 20, delay = 1000) => {
+    return new Promise((resolve, reject) => {
+        const attempt = (n) => {
+            const socket = net.connect(port, "localhost", () => {
+                socket.destroy();
+                console.log(`[MCP PROCESS] Port ${port} is ready!`);
+                resolve();
+            });
+            socket.on("error", () => {
+                socket.destroy();
+                if (n <= 0) {
+                    reject(new Error(`Port ${port} not ready after retries`));
+                } else {
+                    console.log(`[MCP PROCESS] Waiting for port ${port}... (${n} retries left)`);
+                    setTimeout(() => attempt(n - 1), delay);
+                }
+            });
+        };
+        attempt(retries);
+    });
+};
 
 // ─── Start MongoDB MCP server as child process ───────────────────
 const mcpProcess = spawn("mongodb-mcp-server", ["--transport", "http", "--port", "3001"], {
@@ -23,9 +48,13 @@ mcpProcess.on("error", (err) => {
 
 mcpProcess.on("exit", (code) => {
     console.error("[MCP PROCESS] Exited with code:", code);
+    mcpReady = false;
 });
 
-console.log("[MCP PROCESS] Started MongoDB MCP server on port 3001");
+// Wait for MCP to be ready then flip the flag
+waitForPort(3001)
+    .then(() => { mcpReady = true; })
+    .catch((err) => console.error("[MCP PROCESS] Never became ready:", err.message));
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
@@ -36,7 +65,7 @@ app.use((req, res, next) => {
     next();
 });
 
-// ─── OAuth Protected Resource Metadata (Claude requires this) ────
+// ─── OAuth Protected Resource Metadata ──────────────────────────
 app.get("/.well-known/oauth-protected-resource", (req, res) => {
     res.json({
         resource: BASE_URL,
@@ -133,10 +162,20 @@ const requireAuth = (req, res, next) => {
     next();
 };
 
+// ─── MCP Ready check middleware ──────────────────────────────────
+const requireMcpReady = (req, res, next) => {
+    if (!mcpReady) {
+        console.log("[MCP] Server not ready yet");
+        return res.status(503).json({ error: "MCP server not ready yet, try again in a moment" });
+    }
+    next();
+};
+
 // ─── Proxy to MongoDB MCP ────────────────────────────────────────
 app.use(
     "/mcp",
     requireAuth,
+    requireMcpReady,
     createProxyMiddleware({
         target: "http://localhost:3001",
         changeOrigin: true,
@@ -149,7 +188,10 @@ app.use(
     })
 );
 
-app.get("/health", (req, res) => res.json({ status: "ok" }));
+app.get("/health", (req, res) => res.json({
+    status: "ok",
+    mcpReady,
+}));
 
 app.listen(PORT, () => {
     console.log(`OAuth proxy running on port ${PORT}`);
