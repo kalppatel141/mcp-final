@@ -38,7 +38,11 @@ const waitForPort = (port, retries = 20, delay = 1000) => {
 
 // ─── Start MongoDB MCP server as child process ───────────────────
 const mcpProcess = spawn("mongodb-mcp-server", ["--transport", "http", "--port", "3001"], {
-    env: { ...process.env },
+    env: {
+        ...process.env,
+        MDB_MCP_PORT: "3001",
+        PORT: "3001", // override Railway's PORT=3000 for child process
+    },
     stdio: ["ignore", "pipe", "pipe"],
 });
 
