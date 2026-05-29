@@ -12,5 +12,5 @@ COPY server.js .
 
 EXPOSE 3000
 
-# Start both the MCP server (port 3001) and the proxy (port 3000)
-CMD sh -c "mongodb-mcp-server --transport http --port 3001 & node server.js"
+# Use a shell script to start both processes with logging
+CMD sh -c "echo 'Starting MongoDB MCP on port 3001...' && mongodb-mcp-server --transport http --port 3001 & sleep 3 && echo 'Starting OAuth proxy on port 3000...' && node server.js"
