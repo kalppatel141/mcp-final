@@ -6,7 +6,7 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const CLIENT_ID = process.env.OAUTH_CLIENT_ID || "mongo-mcp-client";
 const CLIENT_SECRET = process.env.OAUTH_CLIENT_SECRET || "mongo-mcp-secret";
-const BASE_URL = process.env.BASE_URL; // your Railway public URL
+const BASE_URL = process.env.BASE_URL;
 
 // Store valid tokens in memory
 const validTokens = new Set();
@@ -21,10 +21,8 @@ app.get("/oauth/authorize", (req, res) => {
     const { redirect_uri, state } = req.query;
     const code = uuidv4();
 
-    // Store code temporarily (in prod use Redis/DB)
     validTokens.add(code);
 
-    // Redirect back to Claude with the code
     const redirectUrl = new URL(redirect_uri);
     redirectUrl.searchParams.set("code", code);
     if (state) redirectUrl.searchParams.set("state", state);
@@ -36,11 +34,25 @@ app.get("/oauth/authorize", (req, res) => {
 app.post("/oauth/token", (req, res) => {
     const { code, grant_type, client_id, client_secret } = req.body;
 
-    if (grant_type === "client_credentials" || validTokens.has(code)) {
+    // Validate client credentials
+    if (client_id !== CLIENT_ID || client_secret !== CLIENT_SECRET) {
+        return res.status(401).json({ error: "invalid_client" });
+    }
+
+    if (grant_type === "client_credentials") {
+        const token = uuidv4();
+        validTokens.add(token);
+        return res.json({
+            access_token: token,
+            token_type: "bearer",
+            expires_in: 86400,
+        });
+    }
+
+    if (grant_type === "authorization_code" && validTokens.has(code)) {
         validTokens.delete(code);
         const token = uuidv4();
         validTokens.add(token);
-
         return res.json({
             access_token: token,
             token_type: "bearer",
@@ -76,12 +88,11 @@ const requireAuth = (req, res, next) => {
 
 // ─── Proxy to MongoDB MCP ────────────────────────────────────────
 
-// Protected /mcp route — proxies to the actual MCP server
 app.use(
     "/mcp",
     requireAuth,
     createProxyMiddleware({
-        target: "http://localhost:3001", // MCP server runs on 3001
+        target: "http://localhost:3001",
         changeOrigin: true,
     })
 );
